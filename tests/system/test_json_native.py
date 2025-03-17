@@ -73,8 +73,8 @@ def test_struct_with_json_native(engine, bigquery_dataset, metadata):
     """Test STRUCT containing native JSON fields with BigQuery."""
     conn = engine.connect()
     
-    # Use STRING instead of JSON for STRUCT field in system test
-    # since BigQuery DBAPI doesn't support JSON in STRUCT
+    # For system tests, we need to use STRING instead of JSON in STRUCT fields
+    # because the BigQuery DBAPI doesn't support JSON in STRUCT fields
     table = sqlalchemy.Table(
         f"{bigquery_dataset}.test_struct_json_native",
         metadata,
@@ -84,7 +84,7 @@ def test_struct_with_json_native(engine, bigquery_dataset, metadata):
             STRUCT(
                 name=sqlalchemy.String,
                 joined_date=sqlalchemy.DATE,
-                preferences=sqlalchemy.String  # Use String instead of JSON for system test
+                preferences=sqlalchemy.String  # Use String instead of JSON
             )
         ),
     )
@@ -97,13 +97,16 @@ def test_struct_with_json_native(engine, bigquery_dataset, metadata):
         "notifications": {"email": True, "push": False}
     }
     
+    # We need to manually serialize the JSON data for system tests
+    import json
+    
     conn.execute(
         table.insert().values(
             id=1,
             user_data={
                 "name": "Alice",
                 "joined_date": datetime.date(2023, 1, 15),
-                "preferences": json.dumps(preferences_data)  # Manually serialize for system test
+                "preferences": json.dumps(preferences_data)  # Manually serialize
             }
         )
     )
@@ -115,8 +118,9 @@ def test_struct_with_json_native(engine, bigquery_dataset, metadata):
     assert result[0].user_data["name"] == "Alice"
     assert result[0].user_data["joined_date"] == datetime.date(2023, 1, 15)
     
-    # The preferences should be manually deserialized for system test
-    preferences = json.loads(result[0].user_data["preferences"])
+    # The preferences should be manually deserialized
+    preferences_str = result[0].user_data["preferences"]
+    preferences = json.loads(preferences_str)
     assert isinstance(preferences, dict)
     assert preferences["theme"] == "light"
     assert preferences["notifications"]["email"] is True
@@ -127,4 +131,134 @@ def test_struct_with_json_native(engine, bigquery_dataset, metadata):
             func.JSON_EXTRACT_SCALAR(table.c.user_data.preferences, '$.theme') == "light"
         )
     ))
-    assert len(result) == 1 
+    assert len(result) == 1
+
+    # Test updating the JSON field in a STRUCT
+    new_preferences = {
+        "theme": "dark",
+        "language": "fr",
+        "notifications": {"email": False, "push": True}
+    }
+    
+    conn.execute(
+        table.update().where(table.c.id == 1).values(
+            user_data={
+                "name": "Alice",
+                "joined_date": datetime.date(2023, 1, 15),
+                "preferences": json.dumps(new_preferences)  # Manually serialize
+            }
+        )
+    )
+    
+    # Verify the update
+    result = list(conn.execute(select(table)))
+    assert len(result) == 1
+    preferences_str = result[0].user_data["preferences"]
+    preferences = json.loads(preferences_str)
+    assert preferences["theme"] == "dark"
+    assert preferences["language"] == "fr"
+    assert preferences["notifications"]["email"] is False
+    assert preferences["notifications"]["push"] is True
+
+
+def test_nested_struct_with_json_native(engine, bigquery_dataset, metadata):
+    """Test STRUCT containing multiple JSON fields with BigQuery."""
+    conn = engine.connect()
+    
+    # Create a table with STRUCT containing multiple JSON fields
+    # For system tests, we need to use STRING instead of JSON in STRUCT fields
+    table = sqlalchemy.Table(
+        f"{bigquery_dataset}.test_multiple_json_fields",
+        metadata,
+        sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+        sqlalchemy.Column(
+            "user_data",
+            STRUCT(
+                name=sqlalchemy.String,
+                email=sqlalchemy.String,
+                preferences=sqlalchemy.String,  # Use String instead of JSON
+                theme_config=sqlalchemy.String  # Use String instead of JSON
+            )
+        ),
+    )
+    metadata.create_all(engine)
+
+    # Insert data with STRUCT containing multiple JSON fields
+    preferences_data = {
+        "language": "en",
+        "notifications": {"email": True, "push": False}
+    }
+    
+    theme_config = {
+        "colors": {
+            "primary": "#336699",
+            "secondary": "#993366"
+        },
+        "font_size": 14
+    }
+    
+    # We need to manually serialize the JSON data for system tests
+    import json
+    
+    conn.execute(
+        table.insert().values(
+            id=1,
+            user_data={
+                "name": "Bob",
+                "email": "bob@example.com",
+                "preferences": json.dumps(preferences_data),  # Manually serialize
+                "theme_config": json.dumps(theme_config)      # Manually serialize
+            }
+        )
+    )
+
+    # Query and verify data
+    result = list(conn.execute(select(table)))
+    assert len(result) == 1
+    assert result[0].id == 1
+    
+    # Verify basic info
+    assert result[0].user_data["name"] == "Bob"
+    assert result[0].user_data["email"] == "bob@example.com"
+    
+    # Verify JSON fields are manually deserialized
+    preferences_str = result[0].user_data["preferences"]
+    preferences = json.loads(preferences_str)
+    assert isinstance(preferences, dict)
+    assert preferences["language"] == "en"
+    assert preferences["notifications"]["email"] is True
+    
+    theme_str = result[0].user_data["theme_config"]
+    theme = json.loads(theme_str)
+    assert isinstance(theme, dict)
+    assert theme["colors"]["primary"] == "#336699"
+    assert theme["font_size"] == 14
+    
+    # Test updating JSON fields
+    new_preferences = {
+        "language": "fr",
+        "notifications": {"email": False, "push": True, "sms": True}
+    }
+    
+    conn.execute(
+        table.update().where(table.c.id == 1).values(
+            user_data={
+                "name": "Bob",
+                "email": "bob@example.com",
+                "preferences": json.dumps(new_preferences),  # Manually serialize
+                "theme_config": json.dumps(theme_config)     # Manually serialize
+            }
+        )
+    )
+    
+    # Verify the update
+    result = list(conn.execute(select(table)))
+    assert len(result) == 1
+    
+    # Verify updated preferences
+    preferences_str = result[0].user_data["preferences"]
+    preferences = json.loads(preferences_str)
+    assert preferences["language"] == "fr"
+    assert preferences["notifications"]["email"] is False
+    assert preferences["notifications"]["push"] is True
+    assert preferences["notifications"]["sms"] is True 

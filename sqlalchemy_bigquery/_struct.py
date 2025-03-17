@@ -93,7 +93,125 @@ class STRUCT(sqlalchemy.sql.sqltypes.Indexable, sqlalchemy.types.UserDefinedType
         return f"STRUCT<{', '.join(fields)}>"
 
     def bind_processor(self, dialect):
-        return dict
+        import json
+        
+        # Check if any field in the STRUCT is a JSON type
+        has_json_fields = any(
+            hasattr(type_, "__class__") and type_.__class__.__name__ == "JSON"
+            for _, type_ in self._STRUCT_fields
+        )
+        
+        # If no JSON fields, return dict for backward compatibility
+        if not has_json_fields:
+            return dict
+        
+        def process_value(value, struct_type):
+            if value is None:
+                return None
+            
+            result = {}
+            for key, val in value.items():
+                # Find the field type by case-insensitive lookup
+                field_type = struct_type._STRUCT_byname.get(key.lower())
+                
+                if field_type is None:
+                    # Field not found in schema, pass through unchanged
+                    result[key] = val
+                    continue
+                    
+                # Check if this is a nested STRUCT
+                if hasattr(field_type, "__class__") and field_type.__class__.__name__ == "STRUCT":
+                    if isinstance(val, dict):
+                        # Process nested STRUCT recursively
+                        result[key] = process_value(val, field_type)
+                    else:
+                        result[key] = val
+                # Check if this field is a JSON type
+                elif hasattr(field_type, "__class__") and field_type.__class__.__name__ == "JSON":
+                    # Serialize JSON data
+                    if val is not None and not isinstance(val, str):
+                        result[key] = json.dumps(val)
+                    else:
+                        result[key] = val
+                else:
+                    result[key] = val
+            
+            return result
+        
+        def process(value):
+            if value is None:
+                return None
+            
+            return process_value(value, self)
+        
+        return process
+
+    def result_processor(self, dialect, coltype):
+        import json
+        
+        # Check if any field in the STRUCT is a JSON type
+        has_json_fields = any(
+            hasattr(type_, "__class__") and type_.__class__.__name__ == "JSON"
+            for _, type_ in self._STRUCT_fields
+        )
+        
+        # If no JSON fields, return None for backward compatibility
+        if not has_json_fields:
+            return None
+        
+        def process_value(value, struct_type):
+            if value is None:
+                return None
+            
+            # Handle case where value is a string (happens in some test cases)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, TypeError):
+                    return value
+            
+            if not isinstance(value, dict):
+                return value
+            
+            result = {}
+            for key, val in value.items():
+                # Find the field type by case-insensitive lookup
+                field_type = struct_type._STRUCT_byname.get(key.lower())
+                
+                if field_type is None:
+                    # Field not found in schema, pass through unchanged
+                    result[key] = val
+                    continue
+                    
+                # Check if this is a nested STRUCT
+                if hasattr(field_type, "__class__") and field_type.__class__.__name__ == "STRUCT":
+                    if isinstance(val, dict):
+                        # Process nested STRUCT recursively
+                        result[key] = process_value(val, field_type)
+                    else:
+                        result[key] = val
+                # Check if this field is a JSON type
+                elif hasattr(field_type, "__class__") and field_type.__class__.__name__ == "JSON":
+                    # Deserialize JSON string
+                    if val is not None and isinstance(val, str):
+                        try:
+                            result[key] = json.loads(val)
+                        except (ValueError, TypeError):
+                            result[key] = val  # Keep as is if not valid JSON
+                    else:
+                        result[key] = val
+                else:
+                    result[key] = val
+            
+            return result
+        
+        def process(value):
+            if value is None:
+                return None
+            
+            return process_value(value, self)
+        
+        return process
 
     class Comparator(sqlalchemy.sql.sqltypes.Indexable.Comparator):
         def _setup_getitem(self, name):
