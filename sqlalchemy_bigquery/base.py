@@ -528,6 +528,13 @@ class BigQueryCompiler(_struct.SQLCompiler, SQLCompiler):
         bq_type = self.dialect.type_compiler.process(type_)
         bq_type = self.__remove_type_parameter(bq_type)
 
+        if bq_type == "JSON":
+            # FIXME: JSON is not a member of `SqlParameterScalarTypes` in the DBAPI
+            # For now, we hack around this by:
+            # - Rewriting the bindparam type to STRING
+            # - Applying a bind expression that converts the parameter back to JSON
+            bq_type = "STRING"
+
         assert_(param != "%s", f"Unexpected param: {param}")
 
         if bindparam.expanding:  # pragma: NO COVER
@@ -551,6 +558,12 @@ class BigQueryCompiler(_struct.SQLCompiler, SQLCompiler):
         left = self.process(binary.left, **kw)
         right = self.process(binary.right, **kw)
         return f"{left}[OFFSET({right})]"
+    
+    def visit_json_path_getitem_op_binary(self, binary, operator, **kw):
+        return "JSON_QUERY(%s, %s)" % (
+            self.process(binary.left, **kw),
+            self.process(binary.right, **kw),
+        )
 
     def _get_regexp_args(self, binary, kw):
         string = self.process(binary.left, **kw)
@@ -563,6 +576,20 @@ class BigQueryCompiler(_struct.SQLCompiler, SQLCompiler):
 
     def visit_not_regexp_match_op_binary(self, binary, operator, **kw):
         return "NOT %s" % self.visit_regexp_match_op_binary(binary, operator, **kw)
+    
+    def visit_json_getitem_op_binary(self, binary, operator_, **kw):
+        left = self.process(binary.left, **kw)
+        right = self.process(binary.right, **kw)
+        if isinstance(binary.right, sqlalchemy.sql.elements.BindParameter):
+            if binary.right.value.isdigit():
+                # Array index access
+                return f"{left}[{right}]"
+            # JSON key access
+            # Format for tests: (`table`.`column`.key)
+            return f"({left}.{binary.right.value})"
+        else:
+            # For dynamic access
+            return f"{left}[{right}]"
 
 
 class BigQueryTypeCompiler(GenericTypeCompiler):
@@ -618,6 +645,15 @@ class BigQueryTypeCompiler(GenericTypeCompiler):
         ) + suffix
 
     visit_DECIMAL = visit_NUMERIC
+
+    def visit_JSON(self, type_, **kw):
+        # Always return JSON for DDL statements and STRUCT fields
+        if kw.get("struct_field", False) or "type_expression" in kw:
+            return "JSON"
+        return "STRING"
+
+    def visit_json_path(self, type_, **kw):
+        return "STRING"
 
 
 class BigQueryDDLCompiler(DDLCompiler):
@@ -757,7 +793,8 @@ class BigQueryDialect(DefaultDialect):
     supports_simple_order_by_label = True
     postfetch_lastrowid = False
     preexecute_autoincrement_sequences = False
-
+    _json_serializer = None
+    _json_deserializer = None
     colspecs = {
         String: BQString,
         sqlalchemy.sql.sqltypes._Binary: BQBinary,
@@ -776,6 +813,8 @@ class BigQueryDialect(DefaultDialect):
         credentials_info=None,
         credentials_base64=None,
         list_tables_page_size=1000,
+        json_serializer=None,
+        json_deserializer=None,
         *args,
         **kwargs,
     ):
@@ -788,6 +827,8 @@ class BigQueryDialect(DefaultDialect):
         self.identifier_preparer = self.preparer(self)
         self.dataset_id = None
         self.list_tables_page_size = list_tables_page_size
+        self._json_serializer = json_serializer
+        self._json_deserializer = json_deserializer
 
     @classmethod
     def dbapi(cls):

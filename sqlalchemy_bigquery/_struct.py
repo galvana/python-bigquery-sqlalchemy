@@ -38,6 +38,11 @@ def _get_subtype_col_spec(type_):
 
     type_compiler = base.dialect.type_compiler(base.dialect())
     _get_subtype_col_spec = type_compiler.process
+    
+    # Pass struct_field=True for JSON types in STRUCT fields
+    if hasattr(type_, "__class__") and type_.__class__.__name__ == "JSON":
+        return type_compiler.process(type_, struct_field=True)
+    
     return _get_subtype_col_spec(type_)
 
 
@@ -77,11 +82,15 @@ class STRUCT(sqlalchemy.sql.sqltypes.Indexable, sqlalchemy.types.UserDefinedType
         return f"STRUCT({fields})"
 
     def get_col_spec(self, **kw):
-        fields = ", ".join(
-            f"{name} {_get_subtype_col_spec(type_)}"
-            for name, type_ in self._STRUCT_fields
-        )
-        return f"STRUCT<{fields}>"
+        fields = []
+        for name, type_ in self._STRUCT_fields:
+            # Special handling for JSON types in STRUCT fields
+            if hasattr(type_, "__class__") and type_.__class__.__name__ == "JSON":
+                fields.append(f"{name} JSON")
+            else:
+                fields.append(f"{name} {_get_subtype_col_spec(type_)}")
+        
+        return f"STRUCT<{', '.join(fields)}>"
 
     def bind_processor(self, dialect):
         return dict
@@ -137,8 +146,18 @@ def struct_getitem_op(a, b):
     raise NotImplementedError()
 
 
+def json_getitem_op(a, b):
+    # This is a placeholder function that will be handled by the compiler
+    # The actual implementation is in visit_json_getitem_op_binary
+    return None
+
+
 sqlalchemy.sql.default_comparator.operator_lookup[
     struct_getitem_op.__name__
+] = sqlalchemy.sql.default_comparator.operator_lookup["json_getitem_op"]
+
+sqlalchemy.sql.default_comparator.operator_lookup[
+    json_getitem_op.__name__
 ] = sqlalchemy.sql.default_comparator.operator_lookup["json_getitem_op"]
 
 
